@@ -11,3 +11,5 @@ add_executable(
     dsp_hw3
     src/main.cpp
 )
+
+target_include_directories(dsp_hw3 PUBLIC include)
