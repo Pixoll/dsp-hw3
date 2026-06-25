@@ -6,3 +6,7 @@ out/
 cmake-*/
 data/
 plots/
+
+exp1
+test_vram
+*.o
