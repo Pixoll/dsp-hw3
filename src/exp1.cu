@@ -13,7 +13,7 @@
 #include <cfloat>
 #include <cuda_runtime.h>
 
-#include "loader.h"
+#include "experiments.h"
 
 // Manejo de errores: toda llamada CUDA se envuelve en CUDA_CHECK. Ante un
 // fallo (p.ej. cudaErrorMemoryAllocation) aborta con archivo, linea y la
@@ -175,17 +175,21 @@ static double verificarCPU(const float *h_dataset, const float *h_C,
                 s += (double)Vc[(size_t)k * n + a] * Vc[(size_t)k * n + b];
             Cref[(size_t)a * n + b] = (float)(s / m);
         }
-    double maxErr = 0.0;
+
+    double maxErr = 0.0, maxRef = 0.0;
     for (size_t i = 0; i < (size_t)n * n; ++i)
     {
         double d = fabs((double)h_C[i] - (double)Cref[i]);
         if (d > maxErr)
             maxErr = d;
+        double a = fabs((double)Cref[i]);
+        if (a > maxRef)
+            maxRef = a;
     }
     free(mu);
     free(Vc);
     free(Cref);
-    return maxErr;
+    return (maxRef > 0.0) ? maxErr / maxRef : maxErr;
 }
 
 // ============================================================================
@@ -240,31 +244,9 @@ static Tiempos ejecutarPasada(const float *h_dataset, float *h_C,
     return t;
 }
 
-int main(int argc, char **argv)
+int run_exp1(const float *h_dataset, int m, int n)
 {
-
-    int width = (argc > 1) ? atoi(argv[1]) : 128;
-    int height = (argc > 2) ? atoi(argv[2]) : 128;
-    const char *dir = (argc > 3) ? argv[3] : "./dataset";
-    int channels = 1; // escala de grises
-
-    if (width <= 0 || height <= 0)
-    {
-        fprintf(stderr, "Uso: %s [width] [height] [dataset]\n", argv[0]);
-        return EXIT_FAILURE;
-    }
-
     printf("=== Experimento 1: Covarianza en CUDA (tradicional) ===\n");
-    printf("Imagen: %dx%d  channels=%d   carpeta='%s'\n", width, height, channels, dir);
-
-    float *h_dataset = nullptr;
-    int n = 0;
-    int m = cargarDataset(dir, width, height, 0, &h_dataset, &n); // 0 = todas
-    if (m == 0)
-    {
-        fprintf(stderr, "No se cargaron imágenes. Abortando.\n");
-        return EXIT_FAILURE;
-    }
     printf("Numero de imagenes: m=%d   ->  n=%d   repeticiones medidas=%d\n\n",
            m, n, NREPS);
 
@@ -337,9 +319,9 @@ int main(int argc, char **argv)
     // Validacion (solo n pequeño: la covarianza CPU es O(n^2 * m))
     if (n <= 1024)
     {
-        double maxErr = verificarCPU(h_dataset, h_C, m, n);
-        printf("Verificación CPU: error máx abs = %.3e  -> %s\n",
-               maxErr, (maxErr < 1e-3) ? "OK" : "REVISAR");
+        double errRel = verificarCPU(h_dataset, h_C, m, n);
+        printf("Verificación CPU: error relativo máx = %.3e  -> %s\n",
+               errRel, (errRel < 1e-4) ? "OK" : "REVISAR");
     }
     else
     {
@@ -356,7 +338,6 @@ int main(int argc, char **argv)
     CUDA_CHECK(cudaFree(d_imgs));
     CUDA_CHECK(cudaFree(d_mu));
     CUDA_CHECK(cudaFree(d_C));
-    free(h_dataset);
-    free(h_C);
+    free(h_C); // h_dataset lo libera el caller (main), es su dueño
     return EXIT_SUCCESS;
 }

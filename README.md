@@ -3,7 +3,7 @@
 ## Requirements
 
 - Ubuntu 24.04
-- CMake >= 3.20 (only for the preprocessing skeleton in `src/main.cpp`)
+- CMake >= 3.20
 - CUDA Toolkit (`nvcc` in PATH) — built/tested with CUDA 13.3
 - `libpng-dev` (CImg loads the `.png` dataset through libpng)
 
@@ -11,36 +11,30 @@
 sudo apt-get install -y libpng-dev
 ```
 
-## Experiment 1: Traditional CUDA implementation
+## Build
 
-Computes the covariance matrix (n x n) of the image set, on the GPU.
-Sources live in `src/`, the loader header in `include/`.
-
-### Compile
+Single entry point: `src/main.cpp` preprocesses the dataset and dispatches to the
+selected experiment (`run_exp1`, ...). Built with CMake (CUDA enabled).
 
 ```bash
-make exp1        # or: make all   (also builds the VRAM test)
+./build.sh        # cmake -DCMAKE_BUILD_TYPE=Release -S . -B build && make
 ```
 
-This runs:
+> The CUDA arch is set in `CMakeLists.txt` (`CMAKE_CUDA_ARCHITECTURES 86`,
+> Ampere / RTX 30xx). Change it to match your GPU.
 
-```bash
-nvcc -arch=sm_86 -O3 -Iinclude -Dcimg_use_png src/exp1.cu src/loader.cpp -lpng -lz -o exp1
-```
-
-> `-arch=sm_86` targets Ampere (RTX 30xx). Change it to match your GPU.
-
-### Run
+## Run
 
 ```
-./exp1 [width] [height] [dataset]
+./build/dsp_hw3 [experiment] [width] [height] [dataset]
 ```
 
 | Arg | Default | Meaning |
 |-----|---------|---------|
-| `width`   | `128`       | target image width (resized) |
-| `height`  | `128`       | target image height |
-| `dataset` | `./dataset` | folder with the `.png` images |
+| `experiment` | `1`         | `1` = traditional CUDA (`2` = streams, pending) |
+| `width`      | `192`       | target image width (resized) |
+| `height`     | `192`       | target image height |
+| `dataset`    | `<repo>/dataset` | folder with the `.png` images |
 
 Channels is always 1 (grayscale); `n = width*height`. Pixels are normalized
 to `[0,1]`. All images in the folder are loaded; timings are the average of
@@ -49,14 +43,15 @@ to `[0,1]`. All images in the folder are loaded; timings are the average of
 Examples:
 
 ```bash
-./exp1                       # 128x128, ./dataset  (low-VRAM machines)
-./exp1 192 192               # 192x192 (needs more VRAM for C ~5 GiB)
-./exp1 192 192 /path/to/imgs # custom dataset folder
+./run.sh                          # exp1, 128x128, default dataset
+./build/dsp_hw3 1 192 192         # exp1 at 192x192 
+./build/dsp_hw3 1 192 192 /imgs   # custom dataset folder
 ```
 
 ### VRAM viability test (Step 0)
 
+`build.sh` also builds it:
+
 ```bash
-make test_vram
-./test_vram      # reports free/total VRAM and whether C fits at each size
+./build/test_vram   # reports free/total VRAM and whether C fits at each size
 ```
