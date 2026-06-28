@@ -36,8 +36,7 @@ selected experiment (`run_exp1`, ...). Built with CMake (CUDA enabled).
 | `height`     | `192`       | target image height |
 | `dataset`    | `<repo>/dataset` | folder with the `.png` images |
 
-Channels is always 1 (grayscale); `n = width*height`. Pixels are normalized
-to `[0,1]`. All images in the folder are loaded; timings are the average of
+Channels is always 1 (grayscale); `n = width*height`. All images in the folder are loaded; timings are the average of
 10 measured repetitions (after 1 discarded warm-up).
 
 Examples:
