@@ -20,6 +20,7 @@ add_executable(dsp_hw3
     src/experiment2.cu
     src/preprocess.hpp
     src/args.hpp
+    src/experiment2.h
 )
 target_include_directories(dsp_hw3 PUBLIC include)
 target_compile_definitions(dsp_hw3 PRIVATE cimg_use_png)

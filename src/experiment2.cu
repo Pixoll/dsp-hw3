@@ -1,70 +1,82 @@
+#include "experiment2.h"
+
 #include <cstdio>
-#include <cstdlib>
 #include <cuda_runtime.h>
 
-#define TILE_SIZE 16
+static constexpr int TILE_SIZE = 16;
 
 // Kernel para promedio
-__global__ void kernelSumar(const float *datos, float *suma_global, int n) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < n) atomicAdd(&suma_global[idx], datos[idx]);
+__global__ void kernel_add(const float *datos, float *suma_global, const int n) {
+    const unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        atomicAdd(&suma_global[idx], datos[idx]);
+    }
 }
 
 // Lo mismo pero para la covarianza
-__global__ void kernelCov(const float *batch, float *C_final, float *mu, int n) {
-    // Memoria compartida: es como una caché ultra rápida dentro del bloque
-    __shared__ float sBatch[TILE_SIZE];
+__global__ void kernel_covariance(const float *batch, float *C_final, const float *mu, const int n) {
+    // Memoria compartida: es como una caché ultrarápida dentro del bloque
+    __shared__ float s_batch[TILE_SIZE];
 
-    int fila = blockIdx.y * blockDim.y + threadIdx.y;
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    const unsigned int fila = blockIdx.y * blockDim.y + threadIdx.y;
+    const unsigned int col = blockIdx.x * blockDim.x + threadIdx.x;
 
     // Solo cargamos el valor una vez en memoria compartida por cada hilo del bloque
     // Esto evita miles de accesos a la memoria global
     if (threadIdx.x < TILE_SIZE && fila < n) {
-        sBatch[threadIdx.x] = batch[fila] - mu[fila];
+        s_batch[threadIdx.x] = batch[fila] - mu[fila];
     }
     __syncthreads(); // IMPORTANTE: Esperar a que todos los hilos del bloque carguen el dato
 
     if (fila < n && col < n) {
         // Ahora usamos los datos de la memoria compartida
-        float val = sBatch[threadIdx.y] * sBatch[threadIdx.x];
+        const float val = s_batch[threadIdx.y] * s_batch[threadIdx.x];
         atomicAdd(&C_final[fila * n + col], val);
     }
 }
 
-void calcularCovarianzaGPU(float *h_data, int m, int n, int num_streams, float *out_C) {
+void run_experiment2(const float *h_dataset, const int m, const int n, const int num_streams) {
     // Variables para medir tiempo
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
 
+    const size_t n_squared = static_cast<size_t>(n) * n;
+
     // Reservar memoria en GPU
     float *d_mu, *d_C, *d_batch;
     cudaMalloc(&d_mu, n * sizeof(float)); // Reserva de espacio para el promedio
-    cudaMalloc(&d_C, (size_t)n * n * sizeof(float)); // Reserva de espacio para la matriz Covarianza
+    cudaMalloc(&d_C, n_squared * sizeof(float)); // Reserva de espacio para la matriz Covarianza
     cudaMalloc(&d_batch, n * sizeof(float)); // Reserva de espacio para 1 imagen
 
-    cudaMemset(d_mu, 0, n * sizeof(float)); // LLenamos de 0 el vector promedio
-    cudaMemset(d_C, 0, (size_t)n * n * sizeof(float)); // Llenamos de 0 la matriz de covarianza
+    cudaMemset(d_mu, 0, n * sizeof(float)); // Llenamos de 0 el vector promedio
+    cudaMemset(d_C, 0, n_squared * sizeof(float)); // Llenamos de 0 la matriz de covarianza
 
     // Creacion stream
     cudaStream_t st[num_streams]; // Lista de identificadores de streams
-    for(int i = 0; i < num_streams; i++) cudaStreamCreate(&st[i]); // Crea streams
+    for (int i = 0; i < num_streams; i++)
+        cudaStreamCreate(&st[i]); // Crea streams
 
     // Inicio de medicion
     cudaEventRecord(start);
 
     for (int i = 0; i < m; i++) {
-        int s_idx = i % num_streams; // Distribucion equitativa de  streams
+        const int s_idx = i % num_streams; // Distribucion equitativa de  streams
 
-        cudaMemcpyAsync(d_batch, h_data + ((size_t)i * n), n * sizeof(float), cudaMemcpyHostToDevice, st[s_idx]);
+        cudaMemcpyAsync(
+            d_batch,
+            h_dataset + static_cast<size_t>(i) * n,
+            n * sizeof(float),
+            cudaMemcpyHostToDevice,
+            st[s_idx]
+        );
 
         // Ejecucion de Kernels en el stream que corresponde
-        kernelSumar<<<(n + 255) / 256, 256, 0, st[s_idx]>>>(d_batch, d_mu, n);
+        kernel_add<<<(n + 255) / 256, 256, 0, st[s_idx]>>>(d_batch, d_mu, n);
         dim3 dimBlock(TILE_SIZE, TILE_SIZE);
         dim3 dimGrid((n + TILE_SIZE - 1) / TILE_SIZE, (n + TILE_SIZE - 1) / TILE_SIZE);
 
-        kernelCov<<<dimGrid, dimBlock, 0, st[s_idx]>>>(d_batch, d_C, d_mu, n);
+        kernel_covariance<<<dimGrid, dimBlock, 0, st[s_idx]>>>(d_batch, d_C, d_mu, n);
     }
 
     cudaDeviceSynchronize();
@@ -75,12 +87,14 @@ void calcularCovarianzaGPU(float *h_data, int m, int n, int num_streams, float *
     float milliseconds = 0;
     cudaEventElapsedTime(&milliseconds, start, stop);
 
-    cudaMemcpy(out_C, d_C, (size_t)n * n * sizeof(float), cudaMemcpyDeviceToHost);
+    auto *out_C = static_cast<float *>(malloc(n_squared * sizeof(float)));
+    cudaMemcpy(out_C, d_C, n_squared * sizeof(float), cudaMemcpyDeviceToHost);
 
     // Normalizacion
-    for(size_t i = 0; i < (size_t)n * n; i++) out_C[i] /= m;
+    for (size_t i = 0; i < n_squared; i++)
+        out_C[i] /= static_cast<float>(m);
 
-    // Reporte de informacion tecnica
+    // Reporte de información tecnica
     printf("\n--- Reporte de Ejecucion GPU ---\n");
     printf("Imagenes procesadas (m): %d\n", m);
     printf("Tamaño del vector (n): %d\n", n);
@@ -92,7 +106,8 @@ void calcularCovarianzaGPU(float *h_data, int m, int n, int num_streams, float *
     // Limpieza
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
-    for(int i = 0; i < num_streams; i++) cudaStreamDestroy(st[i]);
+    for (int i = 0; i < num_streams; i++)
+        cudaStreamDestroy(st[i]);
     cudaFree(d_mu);
     cudaFree(d_C);
     cudaFree(d_batch);

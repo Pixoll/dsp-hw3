@@ -9,6 +9,7 @@ static constexpr int DEFAULT_HEIGHT = 128;
 
 struct Args {
     int experiment;
+    int streams;
     int width;
     int height;
     const std::filesystem::path dataset_dir;
@@ -18,7 +19,9 @@ inline Args parse_args(const int argc, const char *const *const argv) {
     namespace fs = std::filesystem;
 
     if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " <experiment> [image_width] [image_height] [dataset_dir]" << std::endl;
+        std::cerr
+            << "Usage: " << argv[0] << " <experiment> <streams> [image_width] [image_height] [dataset_dir]"
+            << std::endl;
         exit(1);
     }
 
@@ -27,17 +30,36 @@ inline Args parse_args(const int argc, const char *const *const argv) {
     const char *arg = argv[1];
     const int experiment = static_cast<int>(std::strtol(arg, &end, 10));
 
-    if (arg == end || errno == ERANGE) {
+    if (arg == end || errno == ERANGE || (experiment != 1 && experiment != 2)) {
         std::cerr << argv[0] << ": invalid experiment " << arg << std::endl;
         exit(1);
     }
 
-    int width = DEFAULT_WIDTH;
+    int streams = 0;
 
-    if (argc >= 3) {
+    if (experiment == 2) {
+        if (argc < 3) {
+            std::cerr << argv[0] << ": missing number of streams" << std::endl;
+            exit(1);
+        }
+
         errno = 0;
         end = nullptr;
         arg = argv[2];
+        streams = static_cast<int>(std::strtol(arg, &end, 10));
+
+        if (arg == end || errno == ERANGE || streams <= 0) {
+            std::cerr << argv[0] << ": invalid number of streams " << arg << std::endl;
+            exit(1);
+        }
+    }
+
+    int width = DEFAULT_WIDTH;
+
+    if (argc > 3) {
+        errno = 0;
+        end = nullptr;
+        arg = argv[3];
         width = static_cast<int>(std::strtol(arg, &end, 10));
 
         if (arg == end || errno == ERANGE || width <= 0) {
@@ -48,10 +70,10 @@ inline Args parse_args(const int argc, const char *const *const argv) {
 
     int height = DEFAULT_HEIGHT;
 
-    if (argc >= 4) {
+    if (argc > 4) {
         errno = 0;
         end = nullptr;
-        arg = argv[3];
+        arg = argv[4];
         height = static_cast<int>(std::strtol(arg, &end, 10));
 
         if (arg == end || errno == ERANGE || height <= 0) {
@@ -62,14 +84,15 @@ inline Args parse_args(const int argc, const char *const *const argv) {
 
     fs::path dataset_dir = fs::path(__builtin_FILE()).parent_path().parent_path() / "dataset";
 
-    if (argc >= 4) {
-        dataset_dir = argv[3];
+    if (argc > 5) {
+        arg = argv[5];
+        dataset_dir = fs::absolute(arg);
 
         if (!fs::exists(dataset_dir) || !fs::is_directory(dataset_dir)) {
-            std::cerr << argv[0] << ": invalid dataset directory " << argv[3] << std::endl;
+            std::cerr << argv[0] << ": invalid dataset directory " << arg << std::endl;
             exit(1);
         }
     }
 
-    return {experiment, width, height, std::move(dataset_dir)};
+    return {experiment, streams, width, height, std::move(dataset_dir)};
 }

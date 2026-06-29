@@ -1,6 +1,5 @@
-#include <filesystem>
-
 #define cimg_display 0
+#include "experiment2.h"
 #ifndef cimg_use_png
 #define cimg_use_png
 #endif
@@ -11,23 +10,17 @@
 #include "preprocess.hpp"
 
 using namespace cimg_library;
-namespace fs = std::filesystem;
 
 int main(const int argc, const char **argv) {
-    const auto &[experiment, width, height, dataset_dir] = parse_args(argc, argv);
+    const auto &[experiment, streams, width, height, dataset_dir] = parse_args(argc, argv);
     const auto &[h_dataset, n, m] = preprocess(dataset_dir, width, height);
 
-    int exit_code;
-    switch (experiment) {
-        case 1:
-            exit_code = run_experiment1(h_dataset, m, n);
-            break;
-
-        default:
-            std::cerr << "Unknown experiment: " << experiment << std::endl;
-            exit_code = 1;
+    if (experiment == 1) {
+        run_experiment1(h_dataset, m, n);
+    } else {
+        run_experiment2(h_dataset, m, n, streams);
     }
 
     free(h_dataset);
-    return exit_code;
+    return 0;
 }

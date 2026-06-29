@@ -244,7 +244,7 @@ static Tiempos ejecutarPasada(const float *h_dataset, float *h_C,
     return t;
 }
 
-int run_experiment1(const float *h_dataset, int m, int n)
+void run_experiment1(const float *h_dataset, int m, int n)
 {
     printf("=== Experimento 1: Covarianza en CUDA (tradicional) ===\n");
     printf("Numero de imagenes: m=%d   ->  n=%d   repeticiones medidas=%d\n\n",
@@ -267,7 +267,7 @@ int run_experiment1(const float *h_dataset, int m, int n)
     if (!h_C)
     {
         fprintf(stderr, "malloc host de C falló (%.2f MiB)\n", bytesC / 1048576.0);
-        return EXIT_FAILURE;
+        exit(1);
     }
 
     //  Device: reservas con chequeo
@@ -339,5 +339,4 @@ int run_experiment1(const float *h_dataset, int m, int n)
     CUDA_CHECK(cudaFree(d_mu));
     CUDA_CHECK(cudaFree(d_C));
     free(h_C); // h_dataset lo libera el caller (main), es su dueño
-    return EXIT_SUCCESS;
 }

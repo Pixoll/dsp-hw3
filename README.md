@@ -33,22 +33,23 @@ Reports free/total GPU memory and whether matrix `C` fits.
 ## Run experiments
 
 ```
-./build/dsp_hw3 [experiment] [width] [height] [dataset]
+./build/dsp_hw3 <experiment> <streams> [width] [height] [dataset]
 ```
 
-| Arg          | Default     | Meaning                                    |
-|--------------|-------------|--------------------------------------------|
-| `experiment` | required    | `1` = traditional CUDA, `2` = CUDA streams |
-| `size`       | `128`       | target image width                         |
-| `size`       | `128`       | target image height                        |
-| `dataset`    | `./dataset` | folder with the `.png` images              |
+| Arg          | Default                     | Meaning                                    |
+|--------------|-----------------------------|--------------------------------------------|
+| `experiment` | required                    | `1` = traditional CUDA, `2` = CUDA streams |
+| `streams`    | required (experiment = `2`) | number of CUDA streams for experiment 1    |
+| `size`       | `128`                       | target image width                         |
+| `size`       | `128`                       | target image height                        |
+| `dataset`    | `./dataset`                 | folder with the `.png` images              |
 
 All images in the folder are loaded into grayscale, and timings are the average result (after 1 discarded warm-up).
 
 Examples:
 
 ```bash
-./build/dsp_hw3 1                 # experiment 1 at 128x128
-./build/dsp_hw3 1 192 192         # experiment 1 at 192x192
-./build/dsp_hw3 1 192 192 /imgs   # custom dataset folder
+./build/dsp_hw3 1                   # experiment 1 at 128x128
+./build/dsp_hw3 2 8 192 192         # experiment 2 with 8 streams at 192x192
+./build/dsp_hw3 1 0 192 192 /imgs   # experiment 1 at 192x192 with custom dataset folder
 ```
