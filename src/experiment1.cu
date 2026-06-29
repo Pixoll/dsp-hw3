@@ -13,7 +13,7 @@
 #include <cfloat>
 #include <cuda_runtime.h>
 
-#include "experiments.h"
+#include "experiment1.h"
 
 // Manejo de errores: toda llamada CUDA se envuelve en CUDA_CHECK. Ante un
 // fallo (p.ej. cudaErrorMemoryAllocation) aborta con archivo, linea y la
@@ -244,7 +244,7 @@ static Tiempos ejecutarPasada(const float *h_dataset, float *h_C,
     return t;
 }
 
-int run_exp1(const float *h_dataset, int m, int n)
+int run_experiment1(const float *h_dataset, int m, int n)
 {
     printf("=== Experimento 1: Covarianza en CUDA (tradicional) ===\n");
     printf("Numero de imagenes: m=%d   ->  n=%d   repeticiones medidas=%d\n\n",
