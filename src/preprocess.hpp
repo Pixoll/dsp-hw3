@@ -39,7 +39,7 @@ inline PreprocessResult preprocess(const std::filesystem::path &dir, const int w
     if (!data) {
         const double megabytes = static_cast<double>(m) * n * sizeof(float) / 1000000.0;
         std::cerr << std::fixed << std::setprecision(2)
-            << "[PRE] host malloc failed (" << megabytes << " MiB)"
+            << "[PRE] host malloc failed (" << megabytes << " MB)"
             << std::endl;
         exit(1);
     }

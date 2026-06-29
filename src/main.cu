@@ -1,5 +1,4 @@
 #define cimg_display 0
-#include "experiment2.h"
 #ifndef cimg_use_png
 #define cimg_use_png
 #endif
@@ -7,6 +6,7 @@
 #include "args.hpp"
 #include "CImg.h"
 #include "experiment1.h"
+#include "experiment2.h"
 #include "preprocess.hpp"
 
 using namespace cimg_library;

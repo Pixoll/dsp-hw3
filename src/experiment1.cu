@@ -1,19 +1,13 @@
-//  Experimento 1: Implementacion Tradicional en CUDA
-//
-//  Calcula la matriz de covarianza (n x n) de un conjunto de m imagenes en
-//  escala de grises, centradas:
-//      mu_j        = (1/m) * sum_k v_j^(k)
-//      vbar_j^(k)  = v_j^(k) - mu_j
-//      C_{jj'}     = (1/m) * sum_k vbar_j^(k) * vbar_{j'}^(k)
-//                  = (1/m) * (V_centrada^T * V_centrada)
-
-#include <cstdio>
-#include <cstdlib>
-#include <cmath>
 #include <cfloat>
+#include <cmath>
+#include <cstdlib>
 #include <cuda_runtime.h>
+#include <iostream>
 
 #include "experiment1.h"
+
+#include <format>
+#include <iomanip>
 
 // Manejo de errores: toda llamada CUDA se envuelve en CUDA_CHECK. Ante un
 // fallo (p.ej. cudaErrorMemoryAllocation) aborta con archivo, linea y la
@@ -24,7 +18,7 @@
         cudaError_t _e = (call);                                        \
         if (_e != cudaSuccess)                                          \
         {                                                               \
-            fprintf(stderr, "[CUDA ERROR] %s:%d -> %s\n    en: %s\n",   \
+            fprintf(stderr, "[CUDA ERROR] %s:%d -> %s\n    at: %s\n",   \
                     __FILE__, __LINE__, cudaGetErrorString(_e), #call); \
             exit(EXIT_FAILURE);                                         \
         }                                                               \
@@ -32,26 +26,33 @@
 
 // Reserva en device con chequeo + reporte de bytes pedidos (out-of-memory es
 // binario: o aloja o falla con cudaErrorMemoryAllocation).
-static void *devMalloc(size_t bytes, const char *etiqueta)
-{
+static void *device_malloc(const size_t bytes, const char *label) {
+    const double megabytes = static_cast<double>(bytes) / 1000000.0;
     void *ptr = nullptr;
-    cudaError_t e = cudaMalloc(&ptr, bytes);
-    if (e != cudaSuccess)
-    {
-        fprintf(stderr,
-                "[CUDA ERROR] cudaMalloc fallo para '%s': %.2f MiB (%zu bytes) -> %s\n",
-                etiqueta, bytes / 1048576.0, bytes, cudaGetErrorString(e));
+    const cudaError_t e = cudaMalloc(&ptr, bytes);
+
+    if (e != cudaSuccess) {
+        const char *error_message = cudaGetErrorString(e);
+        std::cerr << std::fixed << std::setprecision(2)
+            << "[CUDA ERROR] cudaMalloc failed for '" << label << "': " << megabytes << " MB -> " << error_message
+            << std::endl;
         exit(EXIT_FAILURE);
     }
-    printf("  [VRAM] %-16s : %8.2f MiB  OK\n", etiqueta, bytes / 1048576.0);
+
+    std::cout << std::fixed << std::setprecision(2)
+        << "  [VRAM] " << std::setw(16) << std::left << label << " : "
+        << std::setw(8) << std::right << megabytes << " MB  OK"
+        << std::endl;
     return ptr;
 }
 
 // Tamano del tile para la covarianza (memoria compartida). Tunable.
-#define TILE 16
+static constexpr int TILE = 16;
 
 // Repeticiones medidas para promediar tiempos (ademas de 1 warm-up descartado).
-#define NREPS 10
+static constexpr int NREPS = 10;
+
+static constexpr int THREADS = 256;
 
 // ============================================================================
 //  KERNEL 1: promedio por componente (reduccion sobre el lote de imagenes)
@@ -61,34 +62,41 @@ static void *devMalloc(size_t bytes, const char *etiqueta)
 //  Un hilo posee la componente j completa y acumula sobre las num_imgs
 //  imagenes; escribe directamente el PROMEDIO mu_j en d_sum[j].
 // ============================================================================
-__global__ void kernelSumaComponentes(const float *d_imgs, float *d_sum,
-                                      int num_imgs, int n)
-{
-    int j = blockIdx.x * blockDim.x + threadIdx.x; // indice de componente
-    if (j >= n)
+__global__ void kernel_add_components(
+    const float *d_imgs,
+    float *d_sum,
+    const int num_imgs,
+    const int n
+) {
+    const unsigned int j = blockIdx.x * blockDim.x + threadIdx.x; // indice de componente
+    if (j >= n) {
         return;
+    }
 
     float acc = 0.0f;
-    for (int k = 0; k < num_imgs; ++k)
-    {
-        acc += d_imgs[(size_t)k * n + j]; // coalescente entre hilos
+    for (size_t k = 0; k < num_imgs; ++k) {
+        acc += d_imgs[k * n + j]; // coalescente entre hilos
     }
-    d_sum[j] = acc / (float)num_imgs; // promedio mu_j
+    d_sum[j] = acc / static_cast<float>(num_imgs); // promedio mu_j
 }
 
 // ============================================================================
 //  KERNEL 2: centrado elementwise IN-PLACE (resta el promedio).
 //  Firma CONGELADA (la reutiliza el Exp2): NO cambiar.
 // ============================================================================
-__global__ void kernelCentrar(float *d_imgs, const float *d_mu,
-                              int num_imgs, int n)
-{
-    size_t total = (size_t)num_imgs * n;
-    for (size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
-         idx < total;
-         idx += (size_t)gridDim.x * blockDim.x)
-    {
-        int j = idx % n; // componente -> mu_j
+__global__ void kernel_center(
+    float *d_imgs,
+    const float *d_mu,
+    const int num_imgs,
+    const int n
+) {
+    const size_t total = static_cast<size_t>(num_imgs) * n;
+    for (
+        size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+        idx < total;
+        idx += gridDim.x * blockDim.x
+    ) {
+        const size_t j = idx % n; // componente -> mu_j
         d_imgs[idx] -= d_mu[j];
     }
 }
@@ -102,94 +110,101 @@ __global__ void kernelCentrar(float *d_imgs, const float *d_mu,
 //      C[fila][col] = (1/m) * sum_k Vc[k][fila] * Vc[k][col]
 //  Contraccion sobre m (imagenes); cada bloque calcula un tile TILE x TILE.
 // ============================================================================
-__global__ void kernelCovarianzaTiling(const float *d_imgs_centradas,
-                                       float *d_C, int num_imgs, int n)
-{
-    __shared__ float sIzq[TILE][TILE]; // sub-tile de Vc^T (filas de C)
-    __shared__ float sDer[TILE][TILE]; // sub-tile de Vc   (cols de C)
+__global__ void kernel_covariance_tiling(
+    const float *d_imgs_centradas,
+    float *d_C,
+    const int num_imgs,
+    const int n
+) {
+    __shared__ float s_left[TILE][TILE]; // sub-tile de Vc^T (filas de C)
+    __shared__ float s_right[TILE][TILE]; // sub-tile de Vc   (cols de C)
 
-    int fila = blockIdx.y * TILE + threadIdx.y; // indice j  (0..n-1)
-    int col = blockIdx.x * TILE + threadIdx.x;  // indice j' (0..n-1)
+    const unsigned int fila = blockIdx.y * TILE + threadIdx.y; // indice j  (0..n-1)
+    const unsigned int col = blockIdx.x * TILE + threadIdx.x; // indice j' (0..n-1)
 
     float acc = 0.0f;
 
-    for (int t0 = 0; t0 < num_imgs; t0 += TILE)
-    {
-        int kIzq = t0 + threadIdx.x; // imagen para sIzq
-        int kDer = t0 + threadIdx.y; // imagen para sDer
+    for (size_t t0 = 0; t0 < num_imgs; t0 += TILE) {
+        const size_t k_left = t0 + threadIdx.x; // imagen para sIzq
+        const size_t k_right = t0 + threadIdx.y; // imagen para sDer
 
-        sIzq[threadIdx.y][threadIdx.x] =
-            (fila < n && kIzq < num_imgs)
-                ? d_imgs_centradas[(size_t)kIzq * n + fila]
-                : 0.0f;
+        s_left[threadIdx.y][threadIdx.x] = fila < n && k_left < num_imgs
+            ? d_imgs_centradas[k_left * n + fila]
+            : 0.0f;
 
-        sDer[threadIdx.y][threadIdx.x] =
-            (col < n && kDer < num_imgs)
-                ? d_imgs_centradas[(size_t)kDer * n + col]
-                : 0.0f;
+        s_right[threadIdx.y][threadIdx.x] = col < n && k_right < num_imgs
+            ? d_imgs_centradas[k_right * n + col]
+            : 0.0f;
 
         __syncthreads();
 
-#pragma unroll
-        for (int t = 0; t < TILE; ++t)
-        {
-            acc += sIzq[threadIdx.y][t] * sDer[t][threadIdx.x];
+        #pragma unroll
+        for (int t = 0; t < TILE; ++t) {
+            acc += s_left[threadIdx.y][t] * s_right[t][threadIdx.x];
         }
         __syncthreads();
     }
 
-    if (fila < n && col < n)
-    {
-        d_C[(size_t)fila * n + col] = acc / (float)num_imgs;
+    if (fila < n && col < n) {
+        d_C[fila * n + col] = acc / static_cast<float>(num_imgs);
     }
 }
 
 //  Referencia en CPU para validar los kernels (solo para n pequeño).
-static double verificarCPU(const float *h_dataset, const float *h_C,
-                           int m, int n)
-{
-    float *mu = (float *)malloc((size_t)n * sizeof(float));
-    float *Vc = (float *)malloc((size_t)m * n * sizeof(float));
-    float *Cref = (float *)malloc((size_t)n * n * sizeof(float));
-    if (!mu || !Vc || !Cref)
-    {
-        fprintf(stderr, "malloc CPU falló\n");
+static double verify_cpu(
+    const float *h_dataset,
+    const float *h_C,
+    const int m,
+    const int n
+) {
+    const auto mu = static_cast<float *>(malloc(static_cast<size_t>(n) * sizeof(float)));
+    const auto Vc = static_cast<float *>(malloc(static_cast<size_t>(m) * n * sizeof(float)));
+    const auto Cref = static_cast<float *>(malloc(static_cast<size_t>(n) * n * sizeof(float)));
+    if (!mu || !Vc || !Cref) {
+        std::cerr << "CPU malloc failed" << std::endl;
         exit(1);
     }
 
-    for (int j = 0; j < n; ++j)
-    {
+    for (size_t j = 0; j < n; ++j) {
         double s = 0.0;
-        for (int k = 0; k < m; ++k)
-            s += h_dataset[(size_t)k * n + j];
-        mu[j] = (float)(s / m);
-    }
-    for (int k = 0; k < m; ++k)
-        for (int j = 0; j < n; ++j)
-            Vc[(size_t)k * n + j] = h_dataset[(size_t)k * n + j] - mu[j];
-    for (int a = 0; a < n; ++a)
-        for (int b = 0; b < n; ++b)
-        {
-            double s = 0.0;
-            for (int k = 0; k < m; ++k)
-                s += (double)Vc[(size_t)k * n + a] * Vc[(size_t)k * n + b];
-            Cref[(size_t)a * n + b] = (float)(s / m);
+        for (size_t k = 0; k < m; ++k) {
+            s += h_dataset[k * n + j];
         }
-
-    double maxErr = 0.0, maxRef = 0.0;
-    for (size_t i = 0; i < (size_t)n * n; ++i)
-    {
-        double d = fabs((double)h_C[i] - (double)Cref[i]);
-        if (d > maxErr)
-            maxErr = d;
-        double a = fabs((double)Cref[i]);
-        if (a > maxRef)
-            maxRef = a;
+        mu[j] = static_cast<float>(s / m);
     }
+
+    for (size_t k = 0; k < m; ++k) {
+        for (size_t j = 0; j < n; ++j) {
+            Vc[k * n + j] = h_dataset[k * n + j] - mu[j];
+        }
+    }
+
+    for (size_t a = 0; a < n; ++a) {
+        for (size_t b = 0; b < n; ++b) {
+            double s = 0.0;
+            for (size_t k = 0; k < m; ++k) {
+                s += static_cast<double>(Vc[k * n + a]) * Vc[k * n + b];
+            }
+            Cref[a * n + b] = static_cast<float>(s / m);
+        }
+    }
+
+    double max_err = 0.0, max_ref = 0.0;
+    for (size_t i = 0; i < static_cast<size_t>(n) * n; ++i) {
+        const double d = fabs(static_cast<double>(h_C[i]) - Cref[i]);
+        if (d > max_err) {
+            max_err = d;
+        }
+        const double a = fabs(static_cast<double>(Cref[i]));
+        if (a > max_ref) {
+            max_ref = a;
+        }
+    }
+
     free(mu);
     free(Vc);
     free(Cref);
-    return (maxRef > 0.0) ? maxErr / maxRef : maxErr;
+    return max_ref > 0.0 ? max_err / max_ref : max_err;
 }
 
 // ============================================================================
@@ -198,25 +213,35 @@ static double verificarCPU(const float *h_dataset, const float *h_C,
 //  Cada pasada re-copia el dataset original (el centrado es in-place y
 //  destruye d_imgs, por eso cada repeticion parte de datos frescos).
 // ============================================================================
-struct Tiempos
-{
+struct Timings {
     float h2d, compute, d2h;
 };
 
-static Tiempos ejecutarPasada(const float *h_dataset, float *h_C,
-                              float *d_imgs, float *d_mu, float *d_C,
-                              size_t bytesData, size_t bytesC, int m, int n,
-                              cudaEvent_t e0, cudaEvent_t e1, cudaEvent_t e2,
-                              cudaEvent_t e3, cudaEvent_t e4, cudaEvent_t e5)
-{
-    int hilos = 256;
-    int blkSuma = (n + hilos - 1) / hilos;
-    size_t totalElem = (size_t)m * n;
-    int blkCentrar = (int)((totalElem + hilos - 1) / hilos);
-    if (blkCentrar > 65535)
-        blkCentrar = 65535; // grid-stride cubre el resto
-    dim3 blockCov(TILE, TILE);
-    dim3 gridCov((n + TILE - 1) / TILE, (n + TILE - 1) / TILE);
+static Timings run_pass(
+    const float *h_dataset,
+    float *h_C,
+    float *d_imgs,
+    float *d_mu,
+    float *d_C,
+    const size_t bytesData,
+    const size_t bytesC,
+    const int m,
+    const int n,
+    const cudaEvent_t e0,
+    const cudaEvent_t e1,
+    const cudaEvent_t e2,
+    const cudaEvent_t e3,
+    const cudaEvent_t e4,
+    const cudaEvent_t e5
+) {
+    const int block_sum = (n + THREADS - 1) / THREADS;
+    const size_t total_elements = static_cast<size_t>(m) * n;
+    size_t center_block = (total_elements + THREADS - 1) / THREADS;
+    if (center_block > 65535) {
+        center_block = 65535; // grid-stride cubre el resto
+    }
+    dim3 block_cov(TILE, TILE);
+    dim3 grid_cov((n + TILE - 1) / TILE, (n + TILE - 1) / TILE);
 
     // 1) Copia SINCRONA host->device (stream 0 por defecto)
     CUDA_CHECK(cudaEventRecord(e0));
@@ -225,9 +250,9 @@ static Tiempos ejecutarPasada(const float *h_dataset, float *h_C,
 
     // 2) Computo: tres kernels
     CUDA_CHECK(cudaEventRecord(e2));
-    kernelSumaComponentes<<<blkSuma, hilos>>>(d_imgs, d_mu, m, n);
-    kernelCentrar<<<blkCentrar, hilos>>>(d_imgs, d_mu, m, n);
-    kernelCovarianzaTiling<<<gridCov, blockCov>>>(d_imgs, d_C, m, n);
+    kernel_add_components<<<block_sum, THREADS>>>(d_imgs, d_mu, m, n);
+    kernel_center<<<center_block, THREADS>>>(d_imgs, d_mu, m, n);
+    kernel_covariance_tiling<<<grid_cov, block_cov>>>(d_imgs, d_C, m, n);
     CUDA_CHECK(cudaEventRecord(e3));
     CUDA_CHECK(cudaGetLastError());
 
@@ -237,45 +262,51 @@ static Tiempos ejecutarPasada(const float *h_dataset, float *h_C,
     CUDA_CHECK(cudaEventRecord(e5));
     CUDA_CHECK(cudaEventSynchronize(e5));
 
-    Tiempos t;
+    Timings t{};
     CUDA_CHECK(cudaEventElapsedTime(&t.h2d, e0, e1));
     CUDA_CHECK(cudaEventElapsedTime(&t.compute, e2, e3));
     CUDA_CHECK(cudaEventElapsedTime(&t.d2h, e4, e5));
     return t;
 }
 
-void run_experiment1(const float *h_dataset, int m, int n)
-{
-    printf("=== Experimento 1: Covarianza en CUDA (tradicional) ===\n");
-    printf("Numero de imagenes: m=%d   ->  n=%d   repeticiones medidas=%d\n\n",
-           m, n, NREPS);
+void run_experiment1(const float *h_dataset, const int m, const int n) {
+    std::cout
+        << "=== Experiment 1 ===\n"
+        << "Number of images: m=" << m << " -> n=" << n << " repeticiones medidas=" << NREPS << "\n"
+        << std::endl;
 
-    size_t bytesData = (size_t)m * n * sizeof(float);
-    size_t bytesC = (size_t)n * n * sizeof(float);
-    size_t bytesMu = (size_t)n * sizeof(float);
+    const size_t bytes_data = static_cast<size_t>(m) * n * sizeof(float);
+    const size_t bytes_c = static_cast<size_t>(n) * n * sizeof(float);
+    const size_t bytes_mu = static_cast<size_t>(n) * sizeof(float);
 
-    printf("Presupuesto VRAM: dataset=%.2f MiB + C=%.2f MiB + mu=%.2f MiB = %.2f MiB\n",
-           bytesData / 1048576.0, bytesC / 1048576.0, bytesMu / 1048576.0,
-           (bytesData + bytesC + bytesMu) / 1048576.0);
+    std::cout << std::fixed << std::setprecision(2)
+        << "VRAM budget: dataset=" << static_cast<double>(bytes_data) / 1000000.0
+        << " MB + C=" << static_cast<double>(bytes_c) / 1000000.0
+        << " MB + mu=" << static_cast<double>(bytes_mu) / 1000000.0
+        << " MB = " << static_cast<double>(bytes_data + bytes_c + bytes_mu) / 1000000.0
+        << " MB" << std::endl;
 
-    size_t libre, total;
-    CUDA_CHECK(cudaMemGetInfo(&libre, &total));
-    printf("VRAM libre: %.2f MiB / total: %.2f MiB\n\n",
-           libre / 1048576.0, total / 1048576.0);
+    size_t free_memory, total;
+    CUDA_CHECK(cudaMemGetInfo(&free_memory, &total));
+    std::cout << std::fixed << std::setprecision(2)
+        << "VRAM free: " << static_cast<double>(free_memory) / 1000000.0
+        << " MB / total: " << static_cast<double>(total) / 1000000.0
+        << " MB" << std::endl;
 
-    float *h_C = (float *)malloc(bytesC);
-    if (!h_C)
-    {
-        fprintf(stderr, "malloc host de C falló (%.2f MiB)\n", bytesC / 1048576.0);
+    auto *h_C = static_cast<float *>(malloc(bytes_c));
+    if (!h_C) {
+        std::cerr << std::fixed << std::setprecision(2)
+            << "host malloc of C failed (" << static_cast<double>(bytes_c) / 1000000.0 << " MB)"
+            << std::endl;
         exit(1);
     }
 
     //  Device: reservas con chequeo
-    printf("Reservas en device:\n");
-    float *d_imgs = (float *)devMalloc(bytesData, "dataset");
-    float *d_mu = (float *)devMalloc(bytesMu, "mu");
-    float *d_C = (float *)devMalloc(bytesC, "C");
-    printf("\n");
+    std::cout << "Device mallocs:" << std::endl;
+    const auto d_imgs = static_cast<float *>(device_malloc(bytes_data, "dataset"));
+    const auto d_mu = static_cast<float *>(device_malloc(bytes_mu, "mu"));
+    const auto d_C = static_cast<float *>(device_malloc(bytes_c, "C"));
+    std::cout << std::endl;
 
     // Eventos
     cudaEvent_t e0, e1, e2, e3, e4, e5;
@@ -287,46 +318,68 @@ void run_experiment1(const float *h_dataset, int m, int n)
     CUDA_CHECK(cudaEventCreate(&e5));
 
     // Warm-up (descartado): paga init de contexto / JIT
-    ejecutarPasada(h_dataset, h_C, d_imgs, d_mu, d_C,
-                   bytesData, bytesC, m, n, e0, e1, e2, e3, e4, e5);
+    run_pass(h_dataset, h_C, d_imgs, d_mu, d_C, bytes_data, bytes_c, m, n, e0, e1, e2, e3, e4, e5);
 
     // N repeticiones medidas
-    float sumH2D = 0, sumComp = 0, sumD2H = 0;
-    float minH2D = FLT_MAX, minComp = FLT_MAX, minD2H = FLT_MAX;
-    for (int r = 0; r < NREPS; ++r)
-    {
-        Tiempos t = ejecutarPasada(h_dataset, h_C, d_imgs, d_mu, d_C,
-                                   bytesData, bytesC, m, n,
-                                   e0, e1, e2, e3, e4, e5);
-        sumH2D += t.h2d;
-        sumComp += t.compute;
-        sumD2H += t.d2h;
-        if (t.h2d < minH2D)
-            minH2D = t.h2d;
-        if (t.compute < minComp)
-            minComp = t.compute;
-        if (t.d2h < minD2H)
-            minD2H = t.d2h;
+    float h2d_sum = 0, component_sum = 0, d2h_sum = 0;
+    float h2d_min = FLT_MAX, component_min = FLT_MAX, d2h_min = FLT_MAX;
+    for (int r = 0; r < NREPS; ++r) {
+        auto [h2d, compute, d2h] = run_pass(
+            h_dataset,
+            h_C,
+            d_imgs,
+            d_mu,
+            d_C,
+            bytes_data,
+            bytes_c,
+            m,
+            n,
+            e0,
+            e1,
+            e2,
+            e3,
+            e4,
+            e5
+        );
+
+        h2d_sum += h2d;
+        component_sum += compute;
+        d2h_sum += d2h;
+
+        if (h2d < h2d_min) {
+            h2d_min = h2d;
+        }
+        if (compute < component_min) {
+            component_min = compute;
+        }
+        if (d2h < d2h_min) {
+            d2h_min = d2h;
+        }
     }
 
-    printf("=== Tiempos (promedio de %d reps | mínimo) ===\n", NREPS);
-    printf("  Copia H->D (dataset) : %9.3f ms | min %9.3f ms\n", sumH2D / NREPS, minH2D);
-    printf("  Computo (3 kernels)  : %9.3f ms | min %9.3f ms\n", sumComp / NREPS, minComp);
-    printf("  Copia D->H (C)       : %9.3f ms | min %9.3f ms\n", sumD2H / NREPS, minD2H);
-    printf("  TOTAL (promedio)     : %9.3f ms\n\n",
-           (sumH2D + sumComp + sumD2H) / NREPS);
+    std::cout << std::fixed << std::setprecision(3) << std::right
+        << "=== Timings (average of " << NREPS << " reps | min) ===\n"
+        << "  H->D copy (dataset) : " << std::setw(9) << h2d_sum / NREPS << " ms | min " << std::setw(9) << h2d_min
+        << " ms\n"
+        << "  Compute (3 kernels) : " << std::setw(9) << component_sum / NREPS << " ms | min " << std::setw(9)
+        << component_min << " ms\n"
+        << "  D->H copy (C)       : " << std::setw(9) << d2h_sum / NREPS << " ms | min " << std::setw(9) << d2h_min
+        << " ms\n"
+        << "  TOTAL (average)     : " << std::setw(9) << (h2d_sum + component_sum + d2h_sum) / NREPS << " ms\n"
+        << std::endl;
 
     // Validacion (solo n pequeño: la covarianza CPU es O(n^2 * m))
-    if (n <= 1024)
-    {
-        double errRel = verificarCPU(h_dataset, h_C, m, n);
-        printf("Verificación CPU: error relativo máx = %.3e  -> %s\n",
-               errRel, (errRel < 1e-4) ? "OK" : "REVISAR");
-    }
-    else
-    {
-        printf("Verificación CPU omitida (n=%d > 1024; muy costosa en CPU).\n", n);
-        printf("C[0..3]: %.6f %.6f %.6f %.6f\n", h_C[0], h_C[1], h_C[2], h_C[3]);
+    if (n <= 1024) {
+        const double relative_error = verify_cpu(h_dataset, h_C, m, n);
+        const char *message = relative_error < 1e-4 ? "OK" : "CHECK";
+        std::cout << std::scientific << std::setprecision(3)
+            << "CPU verification: max relative error = " << relative_error << "  -> " << message
+            << std::endl;
+    } else {
+        std::cout << std::fixed << std::setprecision(6)
+            << "CPU verification omitted (n=" << n << " > 1024 too costly for CPU).\n"
+            << "C[0..3]: " << h_C[0] << " " << h_C[1] << " " << h_C[2] << " " << h_C[3]
+            << std::endl;
     }
 
     cudaEventDestroy(e0);
