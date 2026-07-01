@@ -1,4 +1,4 @@
-#include "experiment2.h"
+#include "experiment2.hpp"
 
 #include <cstdio>
 #include <cuda_runtime.h>

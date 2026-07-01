@@ -16,11 +16,12 @@ find_package(PNG REQUIRED)
 
 add_executable(dsp_hw3
     src/main.cu
-    src/experiment1.cu
-    src/experiment2.cu
-    src/preprocess.hpp
     src/args.hpp
-    src/experiment2.h
+    src/preprocess.hpp
+    src/experiment1.cu
+    src/experiment1.hpp
+    src/experiment2.cu
+    src/experiment2.hpp
 )
 target_include_directories(dsp_hw3 PUBLIC include)
 target_compile_definitions(dsp_hw3 PRIVATE cimg_use_png)

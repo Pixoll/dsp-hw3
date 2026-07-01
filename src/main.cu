@@ -5,8 +5,8 @@
 
 #include "args.hpp"
 #include "CImg.h"
-#include "experiment1.h"
-#include "experiment2.h"
+#include "experiment1.hpp"
+#include "experiment2.hpp"
 #include "preprocess.hpp"
 
 using namespace cimg_library;

@@ -4,7 +4,7 @@
 #include <cuda_runtime.h>
 #include <iostream>
 
-#include "experiment1.h"
+#include "experiment1.hpp"
 
 #include <format>
 #include <iomanip>
