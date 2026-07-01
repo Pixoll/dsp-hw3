@@ -1,13 +1,14 @@
 #pragma once
 
-#include <filesystem>
+#include "benchmark.hpp"
 
-void run_experiment2(
+double run_experiment2(
     const float *h_dataset,
     int m,
     int n,
     int num_streams,
     int width,
     int height,
-    const std::filesystem::path &data_dir
+    std::ofstream &out,
+    double baseline_total_mean
 );

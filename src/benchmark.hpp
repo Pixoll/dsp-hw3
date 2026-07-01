@@ -5,9 +5,6 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
-#include <optional>
-#include <sstream>
-#include <string>
 #include <vector>
 
 inline constexpr int PRECISION = 9;
@@ -76,7 +73,7 @@ struct Stats {
 };
 
 struct Result {
-    std::string type;
+    int experiment;
     int m = -1;
     int n = -1;
     int width = -1;
@@ -98,7 +95,7 @@ struct Result {
 };
 
 inline constexpr auto CSV_HEADER =
-    "type,m,n,width,height,streams,samples,"
+    "experiment,m,n,width,height,streams,samples,"
     "phase1_mean,phase1_stdev,"
     "phase2_mean,phase2_stdev,"
     "phase3_mean,phase3_stdev,"
@@ -106,7 +103,7 @@ inline constexpr auto CSV_HEADER =
     "speedup,efficiency,correct";
 
 inline std::ofstream &operator<<(std::ofstream &out, const Result &r) {
-    out << r.type << ','
+    out << r.experiment << ','
         << r.m << ','
         << r.n << ','
         << r.width << ','
@@ -136,94 +133,19 @@ inline std::ofstream &operator<<(std::ofstream &out, const Result &r) {
     return out;
 }
 
-inline void write_csv(const std::filesystem::path &path, const Result &r) {
+inline std::ofstream open_measurements_csv(const std::filesystem::path &path) {
     if (path.has_parent_path() && !std::filesystem::exists(path.parent_path())) {
         std::filesystem::create_directories(path.parent_path());
     }
 
-    std::ofstream out(path);
+    std::ofstream out(path, std::ios::trunc);
     out << std::fixed << std::setprecision(PRECISION);
     out << CSV_HEADER << '\n';
-    out << r;
-}
-
-inline std::optional<double> read_total_mean(const std::filesystem::path &path) {
-    if (!std::filesystem::exists(path)) {
-        return std::nullopt;
-    }
-
-    std::ifstream in(path);
-    if (!in) {
-        return std::nullopt;
-    }
-
-    std::string header_line;
-    if (!std::getline(in, header_line)) {
-        return std::nullopt;
-    }
-
-    std::vector<std::string> cols;
-    std::stringstream header_ss(header_line);
-    std::string col;
-    while (std::getline(header_ss, col, ',')) {
-        cols.push_back(col);
-    }
-
-    int total_mean_idx = -1;
-    for (size_t i = 0; i < cols.size(); ++i) {
-        if (cols[i] == "total_mean") {
-            total_mean_idx = static_cast<int>(i);
-            break;
-        }
-    }
-    if (total_mean_idx == -1) {
-        return std::nullopt;
-    }
-
-    std::string data_line;
-    if (!std::getline(in, data_line)) {
-        return std::nullopt;
-    }
-
-    std::vector<std::string> fields;
-    std::stringstream data_ss(data_line);
-    std::string field;
-    while (std::getline(data_ss, field, ',')) {
-        fields.push_back(field);
-    }
-    if (total_mean_idx >= static_cast<int>(fields.size()) || fields[total_mean_idx].empty()) {
-        return std::nullopt;
-    }
-
-    try {
-        return std::stod(fields[total_mean_idx]);
-    } catch (...) {
-        return std::nullopt;
-    }
-}
-
-inline std::filesystem::path exp1_csv_path(
-    const std::filesystem::path &data_dir,
-    const int width,
-    const int height
-) {
-    return data_dir / ("exp1_" + std::to_string(width) + "x" + std::to_string(height) + ".csv");
-}
-
-inline std::filesystem::path exp2_csv_path(
-    const std::filesystem::path &data_dir,
-    const int width,
-    const int height,
-    const int streams
-) {
-    return data_dir / (
-        "exp2_" + std::to_string(width) + "x" + std::to_string(height) + "_"
-        + std::to_string(streams) + ".csv"
-    );
+    return out;
 }
 
 class Benchmark {
-    std::string m_type;
+    int m_experiment;
     int m_m;
     int m_n;
     int m_width;
@@ -235,13 +157,13 @@ class Benchmark {
 
 public:
     Benchmark(
-        std::string type,
+        const int experiment,
         const int m,
         const int n,
         const int width,
         const int height,
         const int streams = -1
-    ) : m_type(std::move(type)), m_m(m), m_n(n), m_width(width), m_height(height), m_streams(streams) {
+    ) : m_experiment(experiment), m_m(m), m_n(n), m_width(width), m_height(height), m_streams(streams) {
     }
 
     void add_sample(const PhaseSample &s) {
@@ -255,7 +177,7 @@ public:
 
     [[nodiscard]] Result finalize(const double baseline_total_mean = -1) const {
         Result result = {
-            .type = m_type,
+            .experiment = m_experiment,
             .m = m_m,
             .n = m_n,
             .width = m_width,

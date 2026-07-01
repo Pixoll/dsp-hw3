@@ -3,8 +3,8 @@
 #include <cfloat>
 #include <cstdlib>
 #include <cuda_runtime.h>
-#include <filesystem>
 #include <format>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 
@@ -222,7 +222,7 @@ void run_experiment1(
     const int n,
     const int width,
     const int height,
-    const std::filesystem::path &data_dir
+    std::ofstream &out
 ) {
     std::cout
         << "=== Experiment 1 ===\n"
@@ -276,7 +276,7 @@ void run_experiment1(
     run_pass(h_dataset, h_C, d_imgs, d_mu, d_C, bytes_data, bytes_c, m, n, e0, e1, e2, e3, e4, e5);
 
     // N repeticiones medidas, acumuladas en el benchmark compartido
-    Benchmark bm("experiment1", m, n, width, height);
+    Benchmark bm(1, m, n, width, height);
 
     for (int r = 0; r < NREPS; ++r) {
         std::cout << "Running pass #" << r + 1 << "..." << std::endl;
@@ -303,9 +303,8 @@ void run_experiment1(
         << "  TOTAL (average)     : " << std::setw(9) << result.total.mean << " ms\n"
         << std::endl;
 
-    const auto csv_path = exp1_csv_path(data_dir, width, height);
-    write_csv(csv_path, result);
-    std::cout << "Measurements written to: " << csv_path.string() << std::endl;
+    out << result;
+    std::cout << "Measurements appended to shared CSV." << std::endl;
 
     cudaEventDestroy(e0);
     cudaEventDestroy(e1);

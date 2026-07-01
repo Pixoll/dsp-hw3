@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cuda_runtime.h>
-#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <vector>
@@ -198,14 +197,15 @@ static PhaseSample run_pass(
     };
 }
 
-void run_experiment2(
+double run_experiment2(
     const float *h_dataset,
     const int m,
     const int n,
     int num_streams,
     const int width,
     const int height,
-    const std::filesystem::path &data_dir
+    std::ofstream &out,
+    const double baseline_total_mean
 ) {
     num_streams = std::max(1, num_streams);
     const size_t n_squared = static_cast<size_t>(n) * n;
@@ -247,7 +247,7 @@ void run_experiment2(
     run_pass(h_dataset, out_C, d_mu, d_C, d_batch, streams, m, n, num_streams, num_batches, n_squared);
 
     // N repeticiones medidas, acumuladas en el benchmark compartido
-    Benchmark bm("experiment2", m, n, width, height, num_streams);
+    Benchmark bm(2, m, n, width, height, num_streams);
 
     for (int r = 0; r < NREPS; ++r) {
         std::cout << "Running pass #" << r + 1 << "..." << std::endl;
@@ -266,18 +266,11 @@ void run_experiment2(
     bm.set_correct(relative_error < 1e-4);
 
     // Speedup / eficiencia contra el baseline S=1.
-    // Si num_streams > 1, se busca el CSV exp2_WxH_1.csv ya generado por una corrida previa con S=1.
-    double baseline_total_mean = -1;
-    if (num_streams > 1) {
-        const auto baseline_path = exp2_csv_path(data_dir, width, height, 1);
-        if (const auto baseline = read_total_mean(baseline_path)) {
-            baseline_total_mean = *baseline;
-        } else {
-            std::cout
-                << "[WARN] Could not find baseline S=1 en " << baseline_path.string()
-                << ", execute with num_streams=1 first so we can calculate speedup/efficiency."
-                << std::endl;
-        }
+    if (num_streams > 1 && baseline_total_mean <= 0) {
+        std::cout
+            << "[WARN] No baseline S=1 total mean was provided, "
+            << "run with num_streams=1 first so we can calculate speedup/efficiency."
+            << std::endl;
     }
 
     const Result result = bm.finalize(baseline_total_mean);
@@ -296,9 +289,8 @@ void run_experiment2(
     }
     std::cout << std::endl;
 
-    const auto csv_path = exp2_csv_path(data_dir, width, height, num_streams);
-    write_csv(csv_path, result);
-    std::cout << "Measurements written to: " << csv_path.string() << std::endl;
+    out << result;
+    std::cout << "Measurements appended to shared CSV." << std::endl;
 
     for (int s = 0; s < num_streams; ++s) {
         cudaStreamDestroy(streams[s]);
@@ -310,4 +302,6 @@ void run_experiment2(
     cudaHostUnregister(const_cast<float *>(h_dataset));
 
     std::free(out_C);
+
+    return result.total.mean;
 }
