@@ -1,6 +1,7 @@
 #include "experiment2.hpp"
 
 #include <algorithm>
+#include <cstring>
 #include <cuda_runtime.h>
 #include <iomanip>
 #include <iostream>
@@ -217,7 +218,9 @@ double run_experiment2(
         << std::endl;
 
     const size_t dataset_bytes = static_cast<size_t>(m) * n * sizeof(float);
-    cudaHostRegister(const_cast<float *>(h_dataset), dataset_bytes, cudaHostRegisterDefault);
+    float *h_dataset_pinned = nullptr;
+    cudaMallocHost(&h_dataset_pinned, dataset_bytes);
+    std::memcpy(h_dataset_pinned, h_dataset, dataset_bytes);
 
     float *d_mu = nullptr, *d_C = nullptr;
     cudaMalloc(&d_mu, n * sizeof(float));
@@ -244,7 +247,7 @@ double run_experiment2(
 
     // Warm-up (descartado): paga init de contexto / JIT
     std::cout << "Warming up..." << std::endl;
-    run_pass(h_dataset, out_C, d_mu, d_C, d_batch, streams, m, n, num_streams, num_batches, n_squared);
+    run_pass(h_dataset_pinned, out_C, d_mu, d_C, d_batch, streams, m, n, num_streams, num_batches, n_squared);
 
     // N repeticiones medidas, acumuladas en el benchmark compartido
     Benchmark bm(2, m, n, width, height, num_streams);
@@ -252,7 +255,7 @@ double run_experiment2(
     for (int r = 0; r < NREPS; ++r) {
         std::cout << "Running pass #" << r + 1 << "..." << std::endl;
         bm.add_sample(
-            run_pass(h_dataset, out_C, d_mu, d_C, d_batch, streams, m, n, num_streams, num_batches, n_squared)
+            run_pass(h_dataset_pinned, out_C, d_mu, d_C, d_batch, streams, m, n, num_streams, num_batches, n_squared)
         );
     }
 
@@ -299,7 +302,7 @@ double run_experiment2(
     cudaFree(d_mu);
     cudaFree(d_C);
 
-    cudaHostUnregister(const_cast<float *>(h_dataset));
+    cudaFreeHost(h_dataset_pinned);
 
     std::free(out_C);
 
