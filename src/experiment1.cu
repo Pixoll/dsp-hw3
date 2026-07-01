@@ -3,7 +3,6 @@
 #include <cfloat>
 #include <cstdlib>
 #include <cuda_runtime.h>
-#include <format>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
