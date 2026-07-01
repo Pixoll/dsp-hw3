@@ -292,7 +292,7 @@ double run_experiment2(
     }
     std::cout << std::endl;
 
-    out << result;
+    out << result << std::flush;
     std::cout << "Measurements appended to shared CSV." << std::endl;
 
     for (int s = 0; s < num_streams; ++s) {

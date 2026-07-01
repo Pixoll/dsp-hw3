@@ -303,7 +303,7 @@ void run_experiment1(
         << "  TOTAL (average)     : " << std::setw(9) << result.total.mean << " ms\n"
         << std::endl;
 
-    out << result;
+    out << result << std::flush;
     std::cout << "Measurements appended to shared CSV." << std::endl;
 
     cudaEventDestroy(e0);
