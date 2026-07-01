@@ -1,14 +1,16 @@
 #include "experiment2.hpp"
 
-#include <cstdio>
-#include <vector>
 #include <algorithm>
 #include <cuda_runtime.h>
+#include <iomanip>
+#include <iostream>
+#include <vector>
 
+#include "control.hpp"
 
 static constexpr int TILE_SIZE = 16;
-
 static constexpr int IMAGES_PER_BATCH = 4;
+static constexpr int THREADS_NORM = 256;
 
 __global__ void kernel_batch_sum(const float *d_batch, float *d_mu_accum, const int n, const int batch_size) {
     const unsigned int j = blockIdx.x * blockDim.x + threadIdx.x;
@@ -26,14 +28,18 @@ __global__ void kernel_normalize_mu(float *d_mu, const int n, const float m) {
     if (idx < static_cast<unsigned int>(n)) d_mu[idx] /= m;
 }
 
-__global__ void kernel_covariance_batch(const float *d_batch, float *d_C,
-                                         const float *d_mu, const int n,
-                                         const int batch_size) {
+__global__ void kernel_covariance_batch(
+    const float *d_batch,
+    float *d_C,
+    const float *d_mu,
+    const int n,
+    const int batch_size
+) {
     __shared__ float s_row[TILE_SIZE];
     __shared__ float s_col[TILE_SIZE];
 
     const unsigned int fila = blockIdx.y * blockDim.y + threadIdx.y;
-    const unsigned int col  = blockIdx.x * blockDim.x + threadIdx.x;
+    const unsigned int col = blockIdx.x * blockDim.x + threadIdx.x;
 
     for (int b = 0; b < batch_size; ++b) {
         if (threadIdx.x == 0 && fila < static_cast<unsigned int>(n)) {
@@ -44,8 +50,10 @@ __global__ void kernel_covariance_batch(const float *d_batch, float *d_C,
         }
         __syncthreads();
         if (fila < static_cast<unsigned int>(n) && col < static_cast<unsigned int>(n)) {
-            atomicAdd(&d_C[static_cast<size_t>(fila) * n + col],
-                      s_row[threadIdx.y] * s_col[threadIdx.x]);
+            atomicAdd(
+                &d_C[static_cast<size_t>(fila) * n + col],
+                s_row[threadIdx.y] * s_col[threadIdx.x]
+            );
         }
         __syncthreads();
     }
@@ -59,10 +67,8 @@ __global__ void kernel_normalize_C(float *d_C, const size_t n_squared, const flo
     }
 }
 
-
-void run_experiment2(const float *h_dataset, const int m, const int n,const int num_streams_in) {
-
-    const int num_streams = std::max(1, num_streams_in);
+void run_experiment2(const float *h_dataset, const int m, const int n, int num_streams) {
+    num_streams = std::max(1, num_streams);
     const size_t n_squared = static_cast<size_t>(n) * n;
 
     const size_t dataset_bytes = static_cast<size_t>(m) * n * sizeof(float);
@@ -95,31 +101,39 @@ void run_experiment2(const float *h_dataset, const int m, const int n,const int 
 
     cudaEventRecord(ev_start);
 
-
-    const int threads_1d = 256;
     for (int b = 0; b < num_batches; ++b) {
         const int stream_id = b % num_streams;
         const int offset_img = b * IMAGES_PER_BATCH;
         const int actual_batch_size = std::min(IMAGES_PER_BATCH, m - offset_img);
         const size_t bytes = static_cast<size_t>(actual_batch_size) * n * sizeof(float);
 
-        cudaMemcpyAsync(d_batch[stream_id],
-                         h_dataset + static_cast<size_t>(offset_img) * n,
-                         bytes, cudaMemcpyHostToDevice, streams[stream_id]);
+        cudaMemcpyAsync(
+            d_batch[stream_id],
+            h_dataset + static_cast<size_t>(offset_img) * n,
+            bytes,
+            cudaMemcpyHostToDevice,
+            streams[stream_id]
+        );
 
-        kernel_batch_sum<<<(n + threads_1d - 1) / threads_1d, threads_1d, 0,
-                            streams[stream_id]>>>(d_batch[stream_id], d_mu, n,
-                                                   actual_batch_size);
+        kernel_batch_sum<<<(n + THREADS_NORM - 1) / THREADS_NORM, THREADS_NORM, 0,
+            streams[stream_id]>>>(
+                d_batch[stream_id],
+                d_mu,
+                n,
+                actual_batch_size
+            );
     }
     cudaDeviceSynchronize();
 
-    kernel_normalize_mu<<<(n + threads_1d - 1) / threads_1d, threads_1d>>>(
-        d_mu, n, static_cast<float>(m));
+    kernel_normalize_mu<<<(n + THREADS_NORM - 1) / THREADS_NORM, THREADS_NORM>>>(
+        d_mu,
+        n,
+        static_cast<float>(m)
+    );
     cudaDeviceSynchronize();
     cudaEventRecord(ev_after_phase1);
 
-
-    const dim3 dimBlock(TILE_SIZE, TILE_SIZE);
+    constexpr dim3 dimBlock(TILE_SIZE, TILE_SIZE);
     const dim3 dimGrid((n + TILE_SIZE - 1) / TILE_SIZE, (n + TILE_SIZE - 1) / TILE_SIZE);
 
     for (int b = 0; b < num_batches; ++b) {
@@ -128,20 +142,28 @@ void run_experiment2(const float *h_dataset, const int m, const int n,const int 
         const int actual_batch_size = std::min(IMAGES_PER_BATCH, m - offset_img);
         const size_t bytes = static_cast<size_t>(actual_batch_size) * n * sizeof(float);
 
-        cudaMemcpyAsync(d_batch[stream_id],
-                         h_dataset + static_cast<size_t>(offset_img) * n,
-                         bytes, cudaMemcpyHostToDevice, streams[stream_id]);
+        cudaMemcpyAsync(
+            d_batch[stream_id],
+            h_dataset + static_cast<size_t>(offset_img) * n,
+            bytes,
+            cudaMemcpyHostToDevice,
+            streams[stream_id]
+        );
 
         kernel_covariance_batch<<<dimGrid, dimBlock, 0, streams[stream_id]>>>(
-            d_batch[stream_id], d_C, d_mu, n, actual_batch_size);
+            d_batch[stream_id],
+            d_C,
+            d_mu,
+            n,
+            actual_batch_size
+        );
     }
     cudaDeviceSynchronize();
     cudaEventRecord(ev_after_phase2);
 
-    const int threads_norm = 256;
     const int blocks_norm = static_cast<int>(
-        std::min<size_t>(65535, (n_squared + threads_norm - 1) / threads_norm));
-    kernel_normalize_C<<<blocks_norm, threads_norm>>>(d_C, n_squared, static_cast<float>(m));
+        std::min<size_t>(65535, (n_squared + THREADS_NORM - 1) / THREADS_NORM));
+    kernel_normalize_C<<<blocks_norm, THREADS_NORM>>>(d_C, n_squared, static_cast<float>(m));
     cudaDeviceSynchronize();
 
     auto *out_C = static_cast<float *>(std::malloc(n_squared * sizeof(float)));
@@ -165,14 +187,15 @@ void run_experiment2(const float *h_dataset, const int m, const int n,const int 
     std::printf("Tiempo Fase 2 (covarianza):   %.3f ms\n", ms_phase2);
     std::printf("Tiempo copia C (D2H):         %.3f ms\n", ms_copy_back);
     std::printf("Tiempo total de ejecucion:    %.3f ms\n", ms_total);
-    std::printf("Throughput estimado:          %.2f img/seg\n", (m / (ms_total / 1000.0)));
+    std::printf("Throughput estimado:          %.2f img/seg\n", m / (ms_total / 1000.0));
     std::printf("-------------------------------------------------\n");
 
-    FILE *fout = std::fopen("C_experiment2.bin", "wb");
-    if (fout) {
-        std::fwrite(out_C, sizeof(float), n_squared, fout);
-        std::fclose(fout);
-    }
+    // error checking
+    const double relative_error = verify_cpu(h_dataset, out_C, m, n);
+    const char *message = relative_error < 1e-4 ? "OK" : "CHECK";
+    std::cout << std::scientific << std::setprecision(3)
+        << "CPU verification: max relative error = " << relative_error << "  -> " << message
+        << std::endl;
 
     cudaEventDestroy(ev_start);
     cudaEventDestroy(ev_after_phase1);

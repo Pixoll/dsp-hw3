@@ -1,13 +1,13 @@
-#include <cfloat>
-#include <cmath>
-#include <cstdlib>
-#include <cuda_runtime.h>
-#include <iostream>
-
 #include "experiment1.hpp"
 
+#include <cfloat>
+#include <cstdlib>
+#include <cuda_runtime.h>
 #include <format>
 #include <iomanip>
+#include <iostream>
+
+#include "control.hpp"
 
 // Manejo de errores: toda llamada CUDA se envuelve en CUDA_CHECK. Ante un
 // fallo (p.ej. cudaErrorMemoryAllocation) aborta con archivo, linea y la
@@ -148,63 +148,6 @@ __global__ void kernel_covariance_tiling(
     if (fila < n && col < n) {
         d_C[fila * n + col] = acc / static_cast<float>(num_imgs);
     }
-}
-
-//  Referencia en CPU para validar los kernels (solo para n pequeño).
-static double verify_cpu(
-    const float *h_dataset,
-    const float *h_C,
-    const int m,
-    const int n
-) {
-    const auto mu = static_cast<float *>(malloc(static_cast<size_t>(n) * sizeof(float)));
-    const auto Vc = static_cast<float *>(malloc(static_cast<size_t>(m) * n * sizeof(float)));
-    const auto Cref = static_cast<float *>(malloc(static_cast<size_t>(n) * n * sizeof(float)));
-    if (!mu || !Vc || !Cref) {
-        std::cerr << "CPU malloc failed" << std::endl;
-        exit(1);
-    }
-
-    for (size_t j = 0; j < n; ++j) {
-        double s = 0.0;
-        for (size_t k = 0; k < m; ++k) {
-            s += h_dataset[k * n + j];
-        }
-        mu[j] = static_cast<float>(s / m);
-    }
-
-    for (size_t k = 0; k < m; ++k) {
-        for (size_t j = 0; j < n; ++j) {
-            Vc[k * n + j] = h_dataset[k * n + j] - mu[j];
-        }
-    }
-
-    for (size_t a = 0; a < n; ++a) {
-        for (size_t b = 0; b < n; ++b) {
-            double s = 0.0;
-            for (size_t k = 0; k < m; ++k) {
-                s += static_cast<double>(Vc[k * n + a]) * Vc[k * n + b];
-            }
-            Cref[a * n + b] = static_cast<float>(s / m);
-        }
-    }
-
-    double max_err = 0.0, max_ref = 0.0;
-    for (size_t i = 0; i < static_cast<size_t>(n) * n; ++i) {
-        const double d = fabs(static_cast<double>(h_C[i]) - Cref[i]);
-        if (d > max_err) {
-            max_err = d;
-        }
-        const double a = fabs(static_cast<double>(Cref[i]));
-        if (a > max_ref) {
-            max_ref = a;
-        }
-    }
-
-    free(mu);
-    free(Vc);
-    free(Cref);
-    return max_ref > 0.0 ? max_err / max_ref : max_err;
 }
 
 // ============================================================================
@@ -368,19 +311,12 @@ void run_experiment1(const float *h_dataset, const int m, const int n) {
         << "  TOTAL (average)     : " << std::setw(9) << (h2d_sum + component_sum + d2h_sum) / NREPS << " ms\n"
         << std::endl;
 
-    // Validacion (solo n pequeño: la covarianza CPU es O(n^2 * m))
-    if (n <= 1024) {
-        const double relative_error = verify_cpu(h_dataset, h_C, m, n);
-        const char *message = relative_error < 1e-4 ? "OK" : "CHECK";
-        std::cout << std::scientific << std::setprecision(3)
-            << "CPU verification: max relative error = " << relative_error << "  -> " << message
-            << std::endl;
-    } else {
-        std::cout << std::fixed << std::setprecision(6)
-            << "CPU verification omitted (n=" << n << " > 1024 too costly for CPU).\n"
-            << "C[0..3]: " << h_C[0] << " " << h_C[1] << " " << h_C[2] << " " << h_C[3]
-            << std::endl;
-    }
+    // error checking
+    const double relative_error = verify_cpu(h_dataset, h_C, m, n);
+    const char *message = relative_error < 1e-4 ? "OK" : "CHECK";
+    std::cout << std::scientific << std::setprecision(3)
+        << "CPU verification: max relative error = " << relative_error << "  -> " << message
+        << std::endl;
 
     cudaEventDestroy(e0);
     cudaEventDestroy(e1);
