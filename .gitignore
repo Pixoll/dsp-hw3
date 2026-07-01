@@ -10,3 +10,4 @@ plots/
 exp1
 test_vram
 *.o
+*.nsys-rep
