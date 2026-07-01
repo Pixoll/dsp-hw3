@@ -1,6 +1,13 @@
-#ifndef EXPERIMENT2_HPP
-#define EXPERIMENT2_HPP
+#pragma once
 
-void run_experiment2(const float *h_dataset, int m, int n, int num_streams);
+#include <filesystem>
 
-#endif // EXPERIMENT2_HPP
+void run_experiment2(
+    const float *h_dataset,
+    int m,
+    int n,
+    int num_streams,
+    int width,
+    int height,
+    const std::filesystem::path &data_dir
+);

@@ -3,10 +3,12 @@
 #include <cfloat>
 #include <cstdlib>
 #include <cuda_runtime.h>
+#include <filesystem>
 #include <format>
 #include <iomanip>
 #include <iostream>
 
+#include "benchmark.hpp"
 #include "control.hpp"
 
 // Manejo de errores: toda llamada CUDA se envuelve en CUDA_CHECK. Ante un
@@ -50,7 +52,7 @@ static void *device_malloc(const size_t bytes, const char *label) {
 static constexpr int TILE = 16;
 
 // Repeticiones medidas para promediar tiempos (ademas de 1 warm-up descartado).
-static constexpr int NREPS = 10;
+static constexpr int NREPS = 32;
 
 static constexpr int THREADS = 256;
 
@@ -155,12 +157,10 @@ __global__ void kernel_covariance_tiling(
 //  Se reutiliza para el warm-up (descartado) y para cada repeticion medida.
 //  Cada pasada re-copia el dataset original (el centrado es in-place y
 //  destruye d_imgs, por eso cada repeticion parte de datos frescos).
+//
+//  phase1 = H->D copy (dataset), phase2 = compute (3 kernels), phase3 = D->H copy (C)
 // ============================================================================
-struct Timings {
-    float h2d, compute, d2h;
-};
-
-static Timings run_pass(
+static PhaseSample run_pass(
     const float *h_dataset,
     float *h_C,
     float *d_imgs,
@@ -205,14 +205,25 @@ static Timings run_pass(
     CUDA_CHECK(cudaEventRecord(e5));
     CUDA_CHECK(cudaEventSynchronize(e5));
 
-    Timings t{};
-    CUDA_CHECK(cudaEventElapsedTime(&t.h2d, e0, e1));
-    CUDA_CHECK(cudaEventElapsedTime(&t.compute, e2, e3));
-    CUDA_CHECK(cudaEventElapsedTime(&t.d2h, e4, e5));
-    return t;
+    float h2d = 0, compute = 0, d2h = 0;
+    CUDA_CHECK(cudaEventElapsedTime(&h2d, e0, e1));
+    CUDA_CHECK(cudaEventElapsedTime(&compute, e2, e3));
+    CUDA_CHECK(cudaEventElapsedTime(&d2h, e4, e5));
+    return {
+        .phase1 = h2d,
+        .phase2 = compute,
+        .phase3 = d2h
+    };
 }
 
-void run_experiment1(const float *h_dataset, const int m, const int n) {
+void run_experiment1(
+    const float *h_dataset,
+    const int m,
+    const int n,
+    const int width,
+    const int height,
+    const std::filesystem::path &data_dir
+) {
     std::cout
         << "=== Experiment 1 ===\n"
         << "Number of images: m=" << m << " -> n=" << n << " repeticiones medidas=" << NREPS << "\n"
@@ -261,62 +272,40 @@ void run_experiment1(const float *h_dataset, const int m, const int n) {
     CUDA_CHECK(cudaEventCreate(&e5));
 
     // Warm-up (descartado): paga init de contexto / JIT
+    std::cout << "Warming up..." << std::endl;
     run_pass(h_dataset, h_C, d_imgs, d_mu, d_C, bytes_data, bytes_c, m, n, e0, e1, e2, e3, e4, e5);
 
-    // N repeticiones medidas
-    float h2d_sum = 0, component_sum = 0, d2h_sum = 0;
-    float h2d_min = FLT_MAX, component_min = FLT_MAX, d2h_min = FLT_MAX;
+    // N repeticiones medidas, acumuladas en el benchmark compartido
+    Benchmark bm("experiment1", m, n, width, height);
+
     for (int r = 0; r < NREPS; ++r) {
-        auto [h2d, compute, d2h] = run_pass(
-            h_dataset,
-            h_C,
-            d_imgs,
-            d_mu,
-            d_C,
-            bytes_data,
-            bytes_c,
-            m,
-            n,
-            e0,
-            e1,
-            e2,
-            e3,
-            e4,
-            e5
+        std::cout << "Running pass #" << r + 1 << "..." << std::endl;
+        bm.add_sample(
+            run_pass(h_dataset, h_C, d_imgs, d_mu, d_C, bytes_data, bytes_c, m, n, e0, e1, e2, e3, e4, e5)
         );
-
-        h2d_sum += h2d;
-        component_sum += compute;
-        d2h_sum += d2h;
-
-        if (h2d < h2d_min) {
-            h2d_min = h2d;
-        }
-        if (compute < component_min) {
-            component_min = compute;
-        }
-        if (d2h < d2h_min) {
-            d2h_min = d2h;
-        }
     }
 
-    std::cout << std::fixed << std::setprecision(3) << std::right
-        << "=== Timings (average of " << NREPS << " reps | min) ===\n"
-        << "  H->D copy (dataset) : " << std::setw(9) << h2d_sum / NREPS << " ms | min " << std::setw(9) << h2d_min
-        << " ms\n"
-        << "  Compute (3 kernels) : " << std::setw(9) << component_sum / NREPS << " ms | min " << std::setw(9)
-        << component_min << " ms\n"
-        << "  D->H copy (C)       : " << std::setw(9) << d2h_sum / NREPS << " ms | min " << std::setw(9) << d2h_min
-        << " ms\n"
-        << "  TOTAL (average)     : " << std::setw(9) << (h2d_sum + component_sum + d2h_sum) / NREPS << " ms\n"
-        << std::endl;
-
-    // error checking
+    // error checking (sobre la ultima pasada medida)
     const double relative_error = verify_cpu(h_dataset, h_C, m, n);
     const char *message = relative_error < 1e-4 ? "OK" : "CHECK";
     std::cout << std::scientific << std::setprecision(3)
         << "CPU verification: max relative error = " << relative_error << "  -> " << message
         << std::endl;
+
+    bm.set_correct(relative_error < 1e-4);
+    const Result result = bm.finalize();
+
+    std::cout << std::fixed << std::setprecision(3) << std::right
+        << "=== Timings (average of " << NREPS << " reps) ===\n"
+        << "  H->D copy (dataset) : " << std::setw(9) << result.phase1.mean << " ms\n"
+        << "  Compute (3 kernels) : " << std::setw(9) << result.phase2.mean << " ms\n"
+        << "  D->H copy (C)       : " << std::setw(9) << result.phase3.mean << " ms\n"
+        << "  TOTAL (average)     : " << std::setw(9) << result.total.mean << " ms\n"
+        << std::endl;
+
+    const auto csv_path = exp1_csv_path(data_dir, width, height);
+    write_csv(csv_path, result);
+    std::cout << "Measurements written to: " << csv_path.string() << std::endl;
 
     cudaEventDestroy(e0);
     cudaEventDestroy(e1);

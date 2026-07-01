@@ -22,6 +22,7 @@ add_executable(dsp_hw3
     src/args.hpp
     src/preprocess.hpp
     src/control.hpp
+    src/benchmark.hpp
     src/experiment1.cu
     src/experiment1.hpp
     src/experiment2.cu
