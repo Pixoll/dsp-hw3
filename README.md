@@ -33,14 +33,13 @@ Reports free/total GPU memory and whether matrix `C` fits.
 ## Run experiments
 
 ```
-./build/dsp_hw3 [width] [height] [dataset]
+./build/dsp_hw3 [width] [height]
 ```
 
-| Arg          | Default                     | Meaning                                    |
-|--------------|-----------------------------|--------------------------------------------|
-| `size`       | `128`                       | target image width                         |
-| `size`       | `128`                       | target image height                        |
-| `dataset`    | `./dataset`                 | folder with the `.png` images              |
+| Arg      | Default | Meaning             |
+|----------|---------|---------------------|
+| `width`  | `128`   | target image width  |
+| `height` | `128`   | target image height |
 
 All images in the folder are loaded into grayscale, and timings are the average result (after 1 discarded warm-up).
 
@@ -49,5 +48,27 @@ Examples:
 ```bash
 ./build/dsp_hw3                 # run experiments at 128x128
 ./build/dsp_hw3 192 192         # run experiments at 192x192
-./build/dsp_hw3 192 192 /imgs   # run experiments at 192x192 with custom dataset folder
+```
+
+### Run experiment 2 profiler (NVIDIA Nsight Systems)
+
+Run a simplified version of the 2nd experiment (without timings calculations) against the NVIDIA profiler.
+
+```
+nsys profile --trace=cuda,nvtx,osrt -o report_s<streams> ./build/profile_exp2 <streams> [width] [height]
+```
+
+| Arg       | Default  | Meaning                       |
+|-----------|----------|-------------------------------|
+| `streams` | required | number of CUDA streams to use |
+| `width`   | `128`    | target image width            |
+| `height`  | `128`    | target image height           |
+
+Examples:
+
+```bash
+# run experiment 2 at 128x128 with 4 streams
+nsys profile --trace=cuda,nvtx,osrt -o report_s4 --force-overwrite=true ./build/profile_exp2 4
+# run experiment 2 at 128x128 with 8 streams
+nsys profile --trace=cuda,nvtx,osrt -o report_s8 --force-overwrite=true ./build/profile_exp2 8 192 192
 ```
