@@ -19,7 +19,10 @@ using namespace cimg_library;
 int main(const int argc, const char **argv) {
     namespace fs = std::filesystem;
 
-    const auto &[width, height, dataset_dir] = parse_args(argc, argv);
+    const fs::path repo_path = fs::path(__builtin_FILE()).parent_path().parent_path();
+    const fs::path dataset_dir = repo_path/ "dataset";
+
+    const auto &[width, height, _] = parse_args<false>(argc, argv);
     const auto &[h_dataset, n, m] = preprocess(dataset_dir, width, height);
     const fs::path data_path = fs::path(__builtin_FILE()).parent_path().parent_path() / "data/measurements.csv";
     constexpr std::array streams_list{1, 2, 4, 8, 16};

@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cerrno>
-#include <filesystem>
 #include <iostream>
 
 static constexpr int DEFAULT_WIDTH = 128;
@@ -10,18 +9,37 @@ static constexpr int DEFAULT_HEIGHT = 128;
 struct Args {
     int width;
     int height;
-    const std::filesystem::path dataset_dir;
+    int streams;
 };
 
-inline Args parse_args(const int argc, const char *const *const argv) {
-    namespace fs = std::filesystem;
+template <bool IsProfiler>
+Args parse_args(const int argc, const char *const *const argv) {
+    int arg_idx = 0;
+    int streams = 1;
+
+    if constexpr (IsProfiler) {
+        if (argc <= ++arg_idx) {
+            std::cerr << argv[0] << ": missing number of streams" << std::endl;
+            exit(1);
+        }
+
+        errno = 0;
+        char *end = nullptr;
+        const char *arg = argv[arg_idx];
+        streams = static_cast<int>(std::strtol(arg, &end, 10));
+
+        if (arg == end || errno == ERANGE || streams <= 0) {
+            std::cerr << argv[0] << ": invalid number of streams " << arg << std::endl;
+            exit(1);
+        }
+    }
 
     int width = DEFAULT_WIDTH;
 
-    if (argc > 1) {
+    if (argc > ++arg_idx) {
         errno = 0;
         char *end = nullptr;
-        const char *arg = argv[1];
+        const char *arg = argv[arg_idx];
         width = static_cast<int>(std::strtol(arg, &end, 10));
 
         if (arg == end || errno == ERANGE || width <= 0) {
@@ -32,10 +50,10 @@ inline Args parse_args(const int argc, const char *const *const argv) {
 
     int height = DEFAULT_HEIGHT;
 
-    if (argc > 2) {
+    if (argc > ++arg_idx) {
         errno = 0;
         char *end = nullptr;
-        const char *arg = argv[2];
+        const char *arg = argv[arg_idx];
         height = static_cast<int>(std::strtol(arg, &end, 10));
 
         if (arg == end || errno == ERANGE || height <= 0) {
@@ -44,17 +62,5 @@ inline Args parse_args(const int argc, const char *const *const argv) {
         }
     }
 
-    fs::path dataset_dir = fs::path(__builtin_FILE()).parent_path().parent_path() / "dataset";
-
-    if (argc > 3) {
-        const char *arg = argv[3];
-        dataset_dir = fs::absolute(arg);
-
-        if (!fs::exists(dataset_dir) || !fs::is_directory(dataset_dir)) {
-            std::cerr << argv[0] << ": invalid dataset directory " << arg << std::endl;
-            exit(1);
-        }
-    }
-
-    return {width, height, std::move(dataset_dir)};
+    return {width, height, streams};
 }

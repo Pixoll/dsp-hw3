@@ -37,15 +37,15 @@ target_link_libraries(dsp_hw3 PRIVATE PNG::PNG PUBLIC OpenMP::OpenMP_CXX)
 add_executable(test_vram src/test_vram.cu)
 target_include_directories(test_vram PUBLIC include)
 
-add_executable(profile_single
-src/profile_single.cu
-src/args.hpp
-src/preprocess.hpp
-src/control.hpp
-src/benchmark.hpp
-src/experiment2.cu
-src/experiment2.hpp
+add_executable(profile_exp2
+    src/profile_exp2.cu
+    src/args.hpp
+    src/preprocess.hpp
+    src/control.hpp
+    src/benchmark.hpp
+    src/experiment2.cu
+    src/experiment2.hpp
 )
-target_include_directories(profile_single PUBLIC include)
-target_compile_definitions(profile_single PRIVATE cimg_use_png)
-target_link_libraries(profile_single PRIVATE PNG::PNG PUBLIC OpenMP::OpenMP_CXX)
+target_include_directories(profile_exp2 PUBLIC include)
+target_compile_definitions(profile_exp2 PRIVATE cimg_use_png)
+target_link_libraries(profile_exp2 PRIVATE PNG::PNG PUBLIC OpenMP::OpenMP_CXX)

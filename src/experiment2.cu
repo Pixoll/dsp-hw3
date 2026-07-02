@@ -14,8 +14,60 @@ static constexpr int TILE_SIZE = 16;
 static constexpr int IMAGES_PER_BATCH = 4;
 static constexpr int THREADS_NORM = 256;
 
-// Repeticiones medidas para promediar tiempos (ademas de 1 warm-up descartado).
-static constexpr int NREPS = 32;
+struct ExperimentData {
+    const int num_streams;
+    size_t n_squared;
+    float *h_dataset_pinned;
+    float *d_mu;
+    float *d_C;
+    std::vector<float *> d_batch;
+    std::vector<cudaStream_t> streams;
+    int num_batches;
+    float *out_C;
+
+    ExperimentData(const float *h_dataset, const int m, const int n, const int num_streams) : num_streams(num_streams) {
+        n_squared = static_cast<size_t>(n) * n;
+        const size_t dataset_bytes = static_cast<size_t>(m) * n * sizeof(float);
+        h_dataset_pinned = nullptr;
+        cudaMallocHost(&h_dataset_pinned, dataset_bytes);
+        std::memcpy(h_dataset_pinned, h_dataset, dataset_bytes);
+
+        d_mu = nullptr;
+        d_C = nullptr;
+        cudaMalloc(&d_mu, n * sizeof(float));
+        cudaMalloc(&d_C, n_squared * sizeof(float));
+
+        d_batch.assign(num_streams, nullptr);
+        const size_t batch_buffer_floats = static_cast<size_t>(IMAGES_PER_BATCH) * n;
+        for (int s = 0; s < num_streams; ++s) {
+            cudaMalloc(&d_batch[s], batch_buffer_floats * sizeof(float));
+        }
+
+        streams.assign(num_streams, cudaStream_t{});
+        for (int s = 0; s < num_streams; ++s) {
+            cudaStreamCreate(&streams[s]);
+        }
+
+        num_batches = (m + IMAGES_PER_BATCH - 1) / IMAGES_PER_BATCH;
+
+        out_C = static_cast<float *>(std::malloc(n_squared * sizeof(float)));
+        if (!out_C) {
+            std::cerr << "host malloc of C failed" << std::endl;
+            exit(1);
+        }
+    }
+
+    ~ExperimentData() {
+        for (int s = 0; s < num_streams; ++s) {
+            cudaStreamDestroy(streams[s]);
+            cudaFree(d_batch[s]);
+        }
+        cudaFree(d_mu);
+        cudaFree(d_C);
+        cudaFreeHost(h_dataset_pinned);
+        std::free(out_C);
+    }
+};
 
 __global__ void kernel_batch_sum(const float *d_batch, float *d_mu_accum, const int n, const int batch_size) {
     const unsigned int j = blockIdx.x * blockDim.x + threadIdx.x;
@@ -198,6 +250,21 @@ static PhaseSample run_pass(
     };
 }
 
+void run_single_experiment2(const float *h_dataset, const int m, const int n, int num_streams) {
+    static constexpr int NREPS = 2;
+
+    num_streams = std::max(1, num_streams);
+    ExperimentData data(h_dataset, m, n, num_streams);
+    auto &[_, n_squared, h_dataset_pinned, d_mu, d_C, d_batch, streams, num_batches, out_C] = data;
+
+    // warm-up
+    run_pass(h_dataset_pinned, out_C, d_mu, d_C, d_batch, streams, m, n, num_streams, num_batches, n_squared);
+
+    for (int r = 0; r < NREPS; ++r) {
+        run_pass(h_dataset_pinned, out_C, d_mu, d_C, d_batch, streams, m, n, num_streams, num_batches, n_squared);
+    }
+}
+
 double run_experiment2(
     const float *h_dataset,
     const int m,
@@ -208,8 +275,9 @@ double run_experiment2(
     std::ofstream &out,
     const double baseline_total_mean
 ) {
+    static constexpr int NREPS = 32;
+
     num_streams = std::max(1, num_streams);
-    const size_t n_squared = static_cast<size_t>(n) * n;
 
     std::cout
         << "=== Experiment 2 ===\n"
@@ -217,33 +285,8 @@ double run_experiment2(
         << " streams=" << num_streams << " repeticiones medidas=" << NREPS << "\n"
         << std::endl;
 
-    const size_t dataset_bytes = static_cast<size_t>(m) * n * sizeof(float);
-    float *h_dataset_pinned = nullptr;
-    cudaMallocHost(&h_dataset_pinned, dataset_bytes);
-    std::memcpy(h_dataset_pinned, h_dataset, dataset_bytes);
-
-    float *d_mu = nullptr, *d_C = nullptr;
-    cudaMalloc(&d_mu, n * sizeof(float));
-    cudaMalloc(&d_C, n_squared * sizeof(float));
-
-    std::vector<float *> d_batch(num_streams, nullptr);
-    const size_t batch_buffer_floats = static_cast<size_t>(IMAGES_PER_BATCH) * n;
-    for (int s = 0; s < num_streams; ++s) {
-        cudaMalloc(&d_batch[s], batch_buffer_floats * sizeof(float));
-    }
-
-    std::vector<cudaStream_t> streams(num_streams);
-    for (int s = 0; s < num_streams; ++s) {
-        cudaStreamCreate(&streams[s]);
-    }
-
-    const int num_batches = (m + IMAGES_PER_BATCH - 1) / IMAGES_PER_BATCH;
-
-    auto *out_C = static_cast<float *>(std::malloc(n_squared * sizeof(float)));
-    if (!out_C) {
-        std::cerr << "host malloc of C failed" << std::endl;
-        exit(1);
-    }
+    ExperimentData data(h_dataset, m, n, num_streams);
+    auto &[_, n_squared, h_dataset_pinned, d_mu, d_C, d_batch, streams, num_batches, out_C] = data;
 
     // Warm-up (descartado): paga init de contexto / JIT
     std::cout << "Warming up..." << std::endl;
@@ -294,17 +337,6 @@ double run_experiment2(
 
     out << result << std::flush;
     std::cout << "Measurements appended to shared CSV." << std::endl;
-
-    for (int s = 0; s < num_streams; ++s) {
-        cudaStreamDestroy(streams[s]);
-        cudaFree(d_batch[s]);
-    }
-    cudaFree(d_mu);
-    cudaFree(d_C);
-
-    cudaFreeHost(h_dataset_pinned);
-
-    std::free(out_C);
 
     return result.total.mean;
 }
